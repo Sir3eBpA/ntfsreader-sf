@@ -26,7 +26,6 @@
   
     Danny Couture
     Software Architect
-    mailto:zerk666@gmail.com
 */
 namespace System.IO.Filesystem.Ntfs
 {

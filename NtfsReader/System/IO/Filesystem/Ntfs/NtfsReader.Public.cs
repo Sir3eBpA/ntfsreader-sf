@@ -26,11 +26,16 @@
   
     Danny Couture
     Software Architect
-    mailto:zerk666@gmail.com
 */
+
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
 using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -55,19 +60,11 @@ namespace System.IO.Filesystem.Ntfs
             if (driveInfo == null)
                 throw new ArgumentNullException("driveInfo");
 
-            DriveInfo tmpDriveInfo = driveInfo;
-
-            //try to find if the drive is mapped on a local volume
-            if (driveInfo.DriveType != DriveType.Fixed)
-                tmpDriveInfo = ResolveLocalMapDrive(driveInfo);
-
-            _rootPath = tmpDriveInfo.Name;
-
-            StringBuilder builder = new StringBuilder(1024);
-            GetVolumeNameForVolumeMountPoint(tmpDriveInfo.RootDirectory.Name, builder, builder.Capacity);
-
             _driveInfo = driveInfo;
             _retrieveMode = retrieveMode;
+
+            StringBuilder builder = new StringBuilder(1024);
+            GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity);
 
             string volume = builder.ToString().TrimEnd(new char[] { '\\' });
 
@@ -90,111 +87,60 @@ namespace System.IO.Filesystem.Ntfs
                     )
                 );
 
-            InitializeDiskInfo();
+            using (_volumeHandle)
+            {
+                InitializeDiskInfo();
 
-            _nodes = ProcessMft();
+                var thread = new Thread(() => { _nodes = ProcessMft(); });
+                thread.Start();
+                thread.Join();
+            }
 
             //cleanup anything that isn't used anymore
             _nameIndex = null;
+            _volumeHandle = null;
 
             GC.Collect();
         }
 
-        /// <summary>
-        /// Get the drive on which this instance is bound to.
-        /// </summary>
-        public DriveInfo DriveInfo
-        {
-            get { return _driveInfo; }
-        }
-
-        /// <summary>
-        /// Get information about the NTFS volume.
-        /// </summary>
         public IDiskInfo DiskInfo
         {
             get { return _diskInfo; }
         }
 
         /// <summary>
-        /// Get a single node that match exactly the given path
-        /// </summary>
-        public INode GetNode(string fullPath)
-        {
-            foreach (INode node in GetNodes(fullPath))
-                if (string.Equals(node.FullName, fullPath, StringComparison.OrdinalIgnoreCase))
-                    return node;
-
-            return null;
-        }
-
-        /// <summary>
         /// Get all nodes under the specified rootPath.
         /// </summary>
         /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
-        public List<INode> GetNodes(string rootPath)
+        public IEnumerable<INode> GetNodes(string rootPath)
         {
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
 
-            List<INode> nodes = new List<INode>();
+            //List<INode> nodes = new List<INode>();
 
             //TODO use Parallel.Net to process this when it becomes available
             UInt32 nodeCount = (UInt32)_nodes.Length;
             for (UInt32 i = 0; i < nodeCount; ++i)
-                if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i).StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
-                    nodes.Add(new NodeWrapper(this, i, _nodes[i]));
+            {
+                if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i).StartsWith(rootPath.AsSpan(), StringComparison.InvariantCultureIgnoreCase))
+                {
+                    yield return new NodeWrapper(this, i, _nodes[i]);
+                }
+            }
 
             stopwatch.Stop();
 
             Trace.WriteLine(
                 string.Format(
                     "{0} node{1} have been retrieved in {2} ms",
-                    nodes.Count,
-                    nodes.Count > 1 ? "s" : string.Empty,
+                    0,
+                    0 > 1 ? "s" : string.Empty,
                     (float)stopwatch.ElapsedTicks / TimeSpan.TicksPerMillisecond
                 )
             );
 
-            return nodes;
-        }
-
-        public unsafe byte[] ReadFile(INode node)
-        {
-            UInt64 bytesToRead = node.Size;
-
-            UInt64 bytesPerCluster = (UInt64)_diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster;
-
-            if (bytesToRead % bytesPerCluster > 0)
-                bytesToRead += bytesPerCluster - (bytesToRead % bytesPerCluster);
-
-            byte[] bitmapData = new byte[bytesToRead];
-
-            fixed (byte* bitmapDataPtr = bitmapData)
-            {
-                UInt64 vcn = 0;
-                UInt64 offset = 0;
-
-                foreach (IFragment fragment in node.Streams[0].Fragments)
-                {
-                    if (fragment.Lcn != VIRTUALFRAGMENT)
-                    {
-                        UInt64 sizeToRead = (fragment.NextVcn - vcn) * bytesPerCluster;
-
-                        ReadFile(
-                            bitmapDataPtr + offset,
-                            sizeToRead,
-                            fragment.Lcn * bytesPerCluster
-                            );
-
-                        offset += sizeToRead;
-                    }
-
-                    vcn = fragment.NextVcn;
-                }
-            }
-
-            return bitmapData;
+            //return nodes;
         }
 
         public byte[] GetVolumeBitmap()
@@ -211,6 +157,10 @@ namespace System.IO.Filesystem.Ntfs
                 _volumeHandle.Dispose();
                 _volumeHandle = null;
             }
+            _names.Clear();
+            _bitmapData = null;
+            _nodes = null;
+            //nodes.Clear();
         }
 
         #endregion

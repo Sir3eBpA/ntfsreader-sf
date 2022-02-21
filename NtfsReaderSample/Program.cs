@@ -26,19 +26,21 @@
   
     Danny Couture
     Software Architect
-    mailto:zerk666@gmail.com
 */
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Filesystem.Ntfs;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+using Collections.Pooled;
 
 namespace NtfsReaderSample
 {
     class Program
     {
-        #region Analyze Similarity
+        #region AnalyzeSimilarity
 
         /// <summary>
         /// Find similar files by grouping those of the exact same size together.
@@ -136,36 +138,47 @@ namespace NtfsReaderSample
 
         static void Main(string[] args)
         {
+            Stopwatch sw = Stopwatch.StartNew();
             Trace.Listeners.Add(new TextWriterTraceListener(Console.Out));
 
-            DriveInfo driveToAnalyze = new DriveInfo("c");
-
-            NtfsReader ntfsReader = 
-                new NtfsReader(driveToAnalyze, RetrieveMode.All);
-
-            IEnumerable<INode> nodes =
-                ntfsReader.GetNodes(driveToAnalyze.Name);
-
-            int directoryCount = 0, fileCount = 0;
-            foreach (INode node in nodes)
+            foreach (DriveInfo driveInfo in DriveInfo.GetDrives())
             {
-                if ((node.Attributes & Attributes.Directory) != 0)
-                    directoryCount++;
-                else
-                    fileCount++;
+                if (driveInfo.DriveFormat != "NTFS" || driveInfo.DriveType != DriveType.Fixed)
+                    continue;
+
+                string driveName = driveInfo.Name[0].ToString();
+                DriveInfo driveToAnalyze = new DriveInfo(driveName);
+                NtfsReader ntfsReader = new NtfsReader(driveToAnalyze, RetrieveMode.Minimal);
+
+                int directoryCount = 0, fileCount = 0;
+                foreach (INode node in ntfsReader.GetNodes(driveToAnalyze.Name))
+                {
+                    if ((node.Attributes & Attributes.Directory) != 0)
+                        directoryCount++;
+                    else
+                        fileCount++;
+                }
+
+                Console.WriteLine(
+                    string.Format(
+                        "Directory Count: {0}, File Count {1}",
+                        directoryCount,
+                        fileCount
+                    )
+                );
+
+                ntfsReader.Dispose();
+
+                //AnalyzeFragmentation(nodes, driveToAnalyze);
+
+                //AnalyzeSimilarity(nodes, driveToAnalyze);
             }
 
-            Console.WriteLine(
-                string.Format(
-                    "Directory Count: {0}, File Count {1}",
-                    directoryCount,
-                    fileCount
-                )
-            );
+            GC.Collect();
 
-            AnalyzeFragmentation(nodes, driveToAnalyze);
-
-            AnalyzeSimilarity(nodes, driveToAnalyze);
+            sw.Stop();
+            Console.WriteLine($"Run time: {sw.Elapsed}");
+            Console.ReadLine();
         }
     }
 }

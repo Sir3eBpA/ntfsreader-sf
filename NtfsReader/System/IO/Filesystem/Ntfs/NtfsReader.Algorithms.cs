@@ -26,25 +26,32 @@
   
     Danny Couture
     Software Architect
-    mailto:zerk666@gmail.com
 */
+using System.Buffers;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Text;
+using Cysharp.Text;
+using Utils;
 
 namespace System.IO.Filesystem.Ntfs
 {
     public partial class NtfsReader
     {
+        private const int MAX_BUFFER = 2048;
+
         /// <summary>
         /// Recurse the node hierarchy and construct its entire name
         /// stopping at the root directory.
         /// </summary>
-        private string GetNodeFullNameCore(UInt32 nodeIndex)
+        private ReadOnlySpan<char> GetNodeFullNameCore(UInt32 nodeIndex)
         {
             UInt32 node = nodeIndex;
+            int index = 0;
 
-            Stack<UInt32> fullPathNodes = new Stack<UInt32>();
-            fullPathNodes.Push(node);
+            var fullPathNodes = ArrayPool<UInt32>.Shared.Rent(256);
+            fullPathNodes[index] = node;
+            ++index;
 
             UInt32 lastNode = node;
             while (true)
@@ -58,31 +65,30 @@ namespace System.IO.Filesystem.Ntfs
                 if (parent == lastNode)
                     throw new InvalidDataException("Detected a loop in the tree structure.");
 
-                fullPathNodes.Push(parent);
+                fullPathNodes[index] = parent;
+                ++index;
 
                 lastNode = node;
                 node = parent;
             }
 
-            StringBuilder fullPath = new StringBuilder();
-            fullPath.Append(_rootPath);
+            // use fast string builder here to avoid any unnecessary allocations
+            // this has proven out to be even faster than ZString
+            // trim by max path size but this is a subject to change because of LongPathsEnabled
+            // TODO: check unsafe code improvements at some point in future
+            var fullPath = new FastStringBuilder(MAX_BUFFER);
+            fullPath.Append(_driveInfo.Name.TrimEnd(new char[] { '\\' }).AsSpan());
 
-            while (fullPathNodes.Count > 0)
+            for(int i = index-1; i >= 0; i--)
             {
-                node = fullPathNodes.Pop();
+                node = fullPathNodes[i];
 
-                fullPath.Append(GetNameFromIndex(_nodes[node].NameIndex));
-                
-                if (fullPathNodes.Count > 0)
-                    fullPath.Append(@"\");
+                fullPath.Append(@"\".AsSpan());
+                fullPath.Append(GetNameFromIndex(_nodes[node].NameIndex).AsSpan());
             }
 
-            string path = fullPath.ToString();
-            if (_locallyMappedDriveRootPath != null)
-                if (path.StartsWith(_locallyMappedDriveRootPath, StringComparison.OrdinalIgnoreCase))
-                    path = Path.Combine(_driveInfo.Name, path.Substring(_locallyMappedDriveRootPath.Length).TrimStart(new char[] { '\\' }));
-
-            return path;
+            ArrayPool<UInt32>.Shared.Return(fullPathNodes);
+            return fullPath.GetSpan();
         }
     }
 }

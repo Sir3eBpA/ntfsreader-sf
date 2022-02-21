@@ -26,7 +26,6 @@
   
     Danny Couture
     Software Architect
-    mailto:zerk666@gmail.com
 */
 using System.Collections.Generic;
 
@@ -43,6 +42,7 @@ namespace System.IO.Filesystem.Ntfs
         string Name { get; }
         UInt64 Size { get; }
         string FullName { get; }
+        string Extension { get; }
         IList<IStream> Streams { get; }
 
         DateTime CreationTime { get; }
